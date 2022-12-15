@@ -1,0 +1,3 @@
+int16[3] hsv
+---
+bool res
