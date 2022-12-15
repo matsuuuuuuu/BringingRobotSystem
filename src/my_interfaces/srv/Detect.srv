@@ -1,4 +1,0 @@
-string name
-float32[2] dest
----
-int8 res
