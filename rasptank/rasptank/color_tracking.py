@@ -73,7 +73,7 @@ def release():
 class ColorTracking(Node):
     def __init__(self):
         self.state = State.INIT
-        super().__init__(node_name = 'camera_tracking')
+        super().__init__(node_name = 'grub_object')
         self.publisher_ = self.create_publisher(Twist, '/cmd_vel', 1)
         
         self.srv_grub = self.create_service(Grub, 'grub', self.grub_callback)
