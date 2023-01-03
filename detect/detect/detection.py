@@ -2,6 +2,7 @@ import sys
 import time
 import math
 
+from std_msgs.msg import Int8
 from enum import IntEnum, auto
 # YOLO object detection
 import cv2 as cv
@@ -79,8 +80,11 @@ class ObjectDetector(Node):
 
         self.state = State.INIT
 
-        super().__init__('Object_Detector')
-        self.srv = self.create_service(Detect, 'detection', self.service_callback)
+        super().__init__('Detect_system')
+        self.srv = self.create_service(Detect, 'detection', self.recieve_name_callback)
+
+        self.publisher_ = self.create_publisher(Int8, 'result', 10)
+        self.msg = Int8()
 
         self.cli_carry = self.create_client(Carry, 'carrying')
         while not self.cli_carry.wait_for_service(timeout_sec=1.0):
@@ -113,19 +117,32 @@ class ObjectDetector(Node):
     #def print_state(self):
     #    print(self.state)
 
-    def service_callback(self, request, response):
+    #エラーを探し物名入力システムに送信する
+    def publish_result(self):
+        self.publisher_.publish(self.msg)
+
+    #探し物名入力システムから探し物名と届け先の座標を受信する
+    def recieve_name_callback(self, request, response):
+        if(self.state = State.WAIT):
+            response.res = True
+        else:
+            response.res = False
+            return response
+
         self.state = State.DETECT
         self.object_name = request.name
         self.request_carry.dest = request.dest
         print(self.state)
-        response.res = 1
-
         return response
 
+    #探し物の位置推定を行う
     def calc_position(self):
-
+        
         newcameramtx, roi = cv.getOptimalNewCameraMatrix(mtx, dist, (Width_,Height_), 1, (Width_,Height_))
+
+        #右カメラの撮影をcamera_serverに依頼
         img_R = self.loadimg_R()
+
         blob = cv.dnn.blobFromImage(img_R, 1/255.0, (416, 416), swapRB=True, crop=False)
         self.net.setInput(blob)
 
@@ -134,29 +151,27 @@ class ObjectDetector(Node):
         ln = [ln[i - 1] for i in self.net.getUnconnectedOutLayers()] 
 
         outputs = self.net.forward(ln)
-
-        # combine the 3 output groups into 1 (10647, 85)
-        # large objects (507, 85)
-        # medium objects (2028, 85)
-        # small objects (8112, 85)
         outputs = np.vstack(outputs)   
 
         dst_img_R = cv.undistort(img_R, mtx, dist, None, newcameramtx)
         cv.imwrite('/home/enpit/Pictures/dst_img_R.jpg', dst_img_R)
+
         #time_sta = time.time() #timer start
+
+        #物体の検出、色の抽出
         success, hsv_R = self.post_process(dst_img_R, outputs, 0.5, self.object_name)
         #time_end = time.time() # timer stop
         #print('time: "%5f"' , time_end-time_sta)
 
         if success == False:
-            #response.res = 'dection fault'
-            self.state = State.WAIT
+            self.state = State.ERROR
             return 
 
         imgBox = dst_img_R[self.rect[0][1]: self.rect[1][1], self.rect[0][0]: self.rect[1][0]]
         pt_R = (self.rect[0][0]+self.rect[1][0])/2
         diff_R = self.rect[1][0] - self.rect[0][0]
 
+        #左カメラの撮影をcamera_serverに依頼
         img_L = self.loadimg_L()
         blob = cv.dnn.blobFromImage(img_L, 1/255.0, (416, 416), swapRB=True, crop=False)
         self.net.setInput(blob)
@@ -172,8 +187,7 @@ class ObjectDetector(Node):
         success, hsv_L = self.post_process(dst_img_L, outputs, 0.5, self.object_name)
 
         if success == False:
-            #response.res = 'detection fault'
-            self.state = State.WAIT
+            self.state = State.ERROR
             return
 
         
@@ -216,6 +230,8 @@ class ObjectDetector(Node):
         #response.res = 'detection success'
 
         self.state = State.SEND
+
+        return 
         
     #Right camera image load
     def loadimg_R(self):
@@ -228,6 +244,8 @@ class ObjectDetector(Node):
         response = future.result()
 
         img_R = self.bridge.imgmsg_to_cv2(response.frame, "bgr8")
+
+        print('success')
         
 
         #img_R = cv.imread("/home/enpit/pic/room_R.jpg")
@@ -288,6 +306,7 @@ class ObjectDetector(Node):
                     cutx = int((self.rect[1][0]-self.rect[0][0])/cut)
                     cuty = int((self.rect[1][1]-self.rect[0][1])/cut)
 
+                    #色を抽出するために写真から物体の中心部分の切り抜き
                     imgBox = img[self.rect[0][1]+cuty: self.rect[1][1]-cuty, self.rect[0][0]+cutx: self.rect[1][0]-cutx]
                     cv.imwrite("kiridasi.jpg",np.array(imgBox))
                     self.rect[0][0] -= cutx
@@ -295,6 +314,7 @@ class ObjectDetector(Node):
                     self.rect[0][1] -= cuty
                     self.rect[1][1] += cuty
 
+                    #切り抜いた部分のHSV値の平均値を算出
                     imgBoxHsv = cv.cvtColor(imgBox,cv.COLOR_BGR2HSV_FULL)
                     hsv.insert(0,int(imgBoxHsv.T[0].flatten().mean()))
                     hsv.insert(1,int(imgBoxHsv.T[1].flatten().mean()))
@@ -326,16 +346,24 @@ def main(args=None):
     objectdetector = ObjectDetector()
         
     while rclpy.ok(): 
-        
+        #検知依頼待機状態
         if objectdetector.state == State.WAIT:
             rclpy.spin_once(objectdetector)
 
+        #探し物検知状態
         elif objectdetector.state == State.DETECT:
             objectdetector.calc_position()
 
+        #運搬依頼送信状態
         elif objectdetector.state == State.SEND:
             print('state : SEND')
-            objectdetector.send_carryrequest()    
+            objectdetector.send_carryrequest()   
+
+        #エラー送信状態
+        elif objectdetector.state == State.ERROR:
+            objectdetector.msg.data = 11
+            objectdetector.publish_result() 
+            objectdetector.state = State.WAIT
 
         time.sleep(0.1)
 

@@ -1,6 +1,7 @@
 import time
 import sys
 from enum import IntEnum, auto
+from std_msgs.msg import Int8
 from action_msgs.msg import GoalStatus
 from geometry_msgs.msg import Pose, PoseStamped
 from geometry_msgs.msg import PoseWithCovarianceStamped
@@ -31,7 +32,7 @@ class BasicNavigator(Node):
     def __init__(self):
         self.state = State.INIT
 
-        super().__init__(node_name='object_carry')
+        super().__init__(node_name='carry_system')
         self.goal_handle = None
         self.result_future = None
         self.feedback = None
@@ -57,6 +58,9 @@ class BasicNavigator(Node):
           reliability=QoSReliabilityPolicy.RELIABLE,
           history=QoSHistoryPolicy.KEEP_LAST,
           depth=1)
+   
+        self.publisher_ = self.create_publisher(Int8, 'result', 10)
+        self.msg = Int8()
 
         self.initial_pose_received = False
         self.cli_grub = self.create_client(Grub, 'grub')
@@ -70,10 +74,15 @@ class BasicNavigator(Node):
         self.req_release = Release.Request()
 
         self.nav_to_pose_client = ActionClient(self, NavigateToPose, 'navigate_to_pose')
-        self.srv = self.create_service(Carry, 'carrying', self.service_callback)
+        self.srv = self.create_service(Carry, 'carrying', self.recieve_pos_callback)
 
         self.state = State.WAIT
+    
+    #運搬結果を/resultに送信する
+    def publish_result(self):
+        self.publisher_.publish(self.msg)
 
+    #grub_objectに物体を下ろす依頼を行う
     def send_release_request(self):
         future = self.cli_release.call_async(self.req_release)
         rclpy.spin_until_future_complete(self, future)
@@ -83,6 +92,7 @@ class BasicNavigator(Node):
             self.state = State.ERROR
         return
 
+    #grub_objectに物体を掴む依頼を行う
     def send_grub_request(self):
         future = self.cli_grub.call_async(self.req_grub)
         rclpy.spin_until_future_complete(self, future)
@@ -92,14 +102,18 @@ class BasicNavigator(Node):
             self.state = State.ERROR
         return #self.future.result()
         
-
-    def service_callback(self, request, response):
+    #object_detect_systemから運搬依頼を受け取る
+    def recieve_pos_callback(self, request, response):
+        if(self.state = State.WAIT):
+            response.res = True
+        else:
+            response.res = False
+            return response
         self.to = request.pos
         self.dest = request.dest
         self.req_grub.hsv = request.hsv
         self.state = State.TOOBJ
 
-        response.res = 1
         return response
 
 
@@ -270,25 +284,17 @@ def main(argv=sys.argv[1:]):
         elif navigator.state == State.RELEASE:
             print('state : RELEASE')
             navigator.send_release_request()
+            navigator.msg.data = 1
+            navigator.publish_result()
+
 
         elif navigator.state == State.ERROR:
+            navigator.msg.data = 21
+            navigator.publish_result()
             print('state : ERROR')
             navigator.state = State.WAIT
 
         time.sleep(0.1)
-    
-
-
-    # Do something depending on the return code
-    
-    if result == GoalStatus.STATUS_SUCCEEDED:
-        print('Goal succeeded!')
-    elif result == GoalStatus.STATUS_CANCELED:
-        print('Goal was canceled!')
-    elif result == GoalStatus.STATUS_ABORTED:
-        print('Goal failed!')
-    else:
-        print('Goal has an invalid return status!')
 
     exit(0)
 
