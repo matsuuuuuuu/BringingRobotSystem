@@ -27,6 +27,7 @@ setup(
             'detector = detect.detection:main',
             'detector2 = detect.detection2:main',
             'camera_server = detect.camera_server:main',
+            'setup_stereocamera = detect.setup_stereocamera:main',
         ],
     },
 )

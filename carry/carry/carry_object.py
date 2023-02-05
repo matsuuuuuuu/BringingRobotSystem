@@ -84,6 +84,7 @@ class BasicNavigator(Node):
 
     #grub_objectに物体を下ろす依頼を行う
     def send_release_request(self):
+        self.req_release = True
         future = self.cli_release.call_async(self.req_release)
         rclpy.spin_until_future_complete(self, future)
         if future.result():
@@ -94,6 +95,7 @@ class BasicNavigator(Node):
 
     #grub_objectに物体を掴む依頼を行う
     def send_grub_request(self):
+        self.req_grub = True
         future = self.cli_grub.call_async(self.req_grub)
         rclpy.spin_until_future_complete(self, future)
         if future.result():
@@ -104,7 +106,7 @@ class BasicNavigator(Node):
         
     #object_detect_systemから運搬依頼を受け取る
     def recieve_pos_callback(self, request, response):
-        if(self.state = State.WAIT):
+        if(self.state == State.WAIT):
             response.res = True
         else:
             response.res = False
@@ -116,7 +118,7 @@ class BasicNavigator(Node):
 
         return response
 
-
+    #引数の座標までナビゲーションを行うメソッド
     def goToPose(self, posx, posy):
         # Sends a `NavToPose` action request and waits for completion
         self.debug("Waiting for 'NavigateToPose' action server")
@@ -126,6 +128,7 @@ class BasicNavigator(Node):
         self.goal_pose.pose.position.x = float(posx)
         self.goal_pose.pose.position.y = float(posy)
 
+        #Navigation2にナビゲーションを依頼する
         goal_msg = NavigateToPose.Goal()
         goal_msg.pose = self.goal_pose
 
@@ -136,6 +139,7 @@ class BasicNavigator(Node):
         rclpy.spin_until_future_complete(self, send_goal_future)
         self.goal_handle = send_goal_future.result()
 
+        #Navigation2が別の処理中の場合
         if not self.goal_handle.accepted:
             self.error('Goal to ' + str(self.goal_pose.pose.position.x) + ' ' +
                            str(self.goal_pose.pose.position.y) + ' was rejected!')
@@ -144,6 +148,7 @@ class BasicNavigator(Node):
         self.result_future = self.goal_handle.get_result_async()
         return True
 
+    #ナビゲーションのキャンセルを行うメソッド
     def cancelNav(self):
         self.info('Canceling current goal.')
         if self.result_future:
@@ -151,6 +156,7 @@ class BasicNavigator(Node):
             rclpy.spin_until_future_complete(self, future)
         return
 
+    #ナビゲーションが完了した際に呼び出されるメソッド
     def isNavComplete(self):
         if not self.result_future:
             # task was cancelled or completed
@@ -247,8 +253,11 @@ def main(argv=sys.argv[1:]):
 
     while rclpy.ok():
 
+        #運搬依頼待機状態
         if navigator.state == State.WAIT:
             rclpy.spin_once(navigator)
+
+        #探し物の位置まで移動状態
         elif navigator.state == State.TOOBJ:
             #navigator.send_grub_request() #debug
             print('state : TOOBJ')
@@ -265,11 +274,12 @@ def main(argv=sys.argv[1:]):
                 print('Goal failed')
                 navigator.state = State.ERROR
             
-
+        #探し物の持ち上げ状態
         elif navigator.state == State.GRUB:
             print('state : GRUB')
             navigator.send_grub_request()
 
+        #届け先の位置まで移動状態
         elif navigator.state == State.TOGOAL:
             print('state : TOGOAL')
             navigator.goToPose(navigator.dest[0], navigator.dest[1])
@@ -280,14 +290,14 @@ def main(argv=sys.argv[1:]):
             #if result != GoalStatus.STATUS_SUCCEEDED:
             #    print('Goal failed')
             #    navigator.state = State.ERROR
-        
+
+        #探し物を下ろす状態
         elif navigator.state == State.RELEASE:
             print('state : RELEASE')
             navigator.send_release_request()
             navigator.msg.data = 1
             navigator.publish_result()
-
-
+        #エラー状態
         elif navigator.state == State.ERROR:
             navigator.msg.data = 21
             navigator.publish_result()

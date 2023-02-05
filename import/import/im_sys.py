@@ -8,7 +8,7 @@ from rclpy.node import Node
 
 from std_msgs.msg import Int8
 
-dest_ = [[-1.2, 0.8], [1.0, 2.0], [1.0, 2.0]]
+dest_ = [-1.3, 0.0]
 
 class State(IntEnum):
     INIT = auto()
@@ -39,24 +39,17 @@ class MinimalClientAsync(Node):
     #/resultに結果が返って来たときの処理
     def result_callback(self, msg):
         if msg.data == 1:
-            print('bringing success!!')
+            print('[RESULT]  carrying item success!!')
         elif msg.data == 11:
-            print('object detection false...')
+            print('[RESULT]  object detection false...')
         elif msg.data == 21:
-            print('object carrying false...')
+            print('[RESULT]  object carrying false...')
         self.state = State.INPUT
 
     #捜し物検知システムにリクエスとを送る
-    def send_request(self, name, dest):
+    def send_request(self, name):
         self.req.name = name
-        for i in range(len(dest_)):
-            if(i == int(dest)):
-                self.req.dest = dest_[i]
-                break
-            if(i == len(dest_)-1):
-                print("select correct destination!")
-                self.state = State.INPUT
-                return
+        self.req.dest = dest_
         
         self.future = self.cli.call_async(self.req)
         rclpy.spin_until_future_complete(self, self.future)
@@ -72,15 +65,14 @@ def main(args=None):
         #入力状態
         if minimal_client.state == State.INPUT:
             Name = input("探し物名:")
-            Dest = input("届け先:")
             minimal_client.state = State.SEND
         #送信状態
         elif minimal_client.state == State.SEND:
-            response = minimal_client.send_request(Name, Dest)
+            response = minimal_client.send_request(Name)
             if response.res == 1:
                 minimal_client.state = State.WAIT
             else:
-                print('object_detect_system busy!')
+                print('[REESULT]  object_detect_system busy!')
                 minimal_client.state = State.INPUT
         #運搬結果受信待機状態
         elif minimal_client.state == State.WAIT:

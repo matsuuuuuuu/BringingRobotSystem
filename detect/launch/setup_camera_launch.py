@@ -13,7 +13,7 @@ def generate_launch_description():
         
         Node(
             package='detect',
-            executable='detector2',
+            executable='setup_stereocamera',
             name='object_detect_system',
             output='screen',
         ),
@@ -21,12 +21,6 @@ def generate_launch_description():
             package='detect',
             executable='camera_server',
             name='camera_server',
-            output='screen',
-        ),
-        Node(
-            package='carry',
-            executable='carry',
-            name='carry_system',
             output='screen',
         ),
 

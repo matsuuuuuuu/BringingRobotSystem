@@ -14,9 +14,8 @@ import rclpy
 from rclpy.node import Node
 
 T = 7
-F = 504
-z = 0
-Z = 225.7 #物体-カメラ間の距離
+F = 400
+Z = 172 #物体-カメラ間の距離
 
 fx = 709.11284991
 fy = 704.88920349
@@ -52,12 +51,6 @@ Height_ = 480
 
 cut = 2.5
 
-class State(IntEnum):
-    INIT = auto()
-    WAIT = auto()
-    DETECT = auto()
-    SEND = auto()
-    ERROR = auto()
 
 def calc_direction(pt_R, z):
     x = (2*z*pt_R-Width_*z)/(2*F*100) - camera_pos[0]
@@ -78,20 +71,7 @@ class ObjectDetector(Node):
         self.rect = [[0] * 2 for i in range(2)]
         self.object_name = ''
 
-        self.state = State.INIT
-
-        super().__init__('Detect_system')
-        self.srv = self.create_service(Detect, 'detection', self.recieve_name_callback)
-
-        self.publisher_ = self.create_publisher(Int8, 'result', 10)
-        self.msg = Int8()
-
-        self.cli_carry = self.create_client(Carry, 'carrying')
-        while not self.cli_carry.wait_for_service(timeout_sec=1.0):
-            self.get_logger().info('carry service not available, waiting again...')
-        self.request_carry = Carry.Request()
-        #self.request_carry.pos = [[0.0] * 2 ]
-        #self.request_carry.hsv = [[0.0] * 3 ]
+        super().__init__('setup_stereocamera')
 
         self.cli_frame = self.create_client(Frame, 'camera')
         while not self.cli_frame.wait_for_service(timeout_sec=1.0):
@@ -112,29 +92,6 @@ class ObjectDetector(Node):
         self.net.setPreferableBackend(cv.dnn.DNN_BACKEND_OPENCV)
         # net.setPreferableTarget(cv.dnn.DNN_TARGET_CPU)
 
-        self.state = State.WAIT
-
-    #def print_state(self):
-    #    print(self.state)
-
-    #エラーを探し物名入力システムに送信する
-    def publish_result(self):
-        self.publisher_.publish(self.msg)
-
-    #探し物名入力システムから探し物名と届け先の座標を受信する
-    def recieve_name_callback(self, request, response):
-        if(self.state = State.WAIT):
-            response.res = True
-        else:
-            response.res = False
-            return response
-
-        self.state = State.DETECT
-        self.object_name = request.name
-        self.request_carry.dest = request.dest
-        print(self.state)
-        return response
-
     #探し物の位置推定を行う
     def calc_position(self):
         
@@ -142,8 +99,9 @@ class ObjectDetector(Node):
 
         #右カメラの撮影をcamera_serverに依頼
         img_R = self.loadimg_R()
+        dst_img_R = cv.undistort(img_R, mtx, dist, None, newcameramtx)
 
-        blob = cv.dnn.blobFromImage(img_R, 1/255.0, (416, 416), swapRB=True, crop=False)
+        blob = cv.dnn.blobFromImage(dst_img_R, 1/255.0, (416, 416), swapRB=True, crop=False)
         self.net.setInput(blob)
 
         # determine the output layer
@@ -153,7 +111,7 @@ class ObjectDetector(Node):
         outputs = self.net.forward(ln)
         outputs = np.vstack(outputs)   
 
-        dst_img_R = cv.undistort(img_R, mtx, dist, None, newcameramtx)
+        
         cv.imwrite('/home/enpit/Pictures/dst_img_R.jpg', dst_img_R)
 
         #time_sta = time.time() #timer start
@@ -164,7 +122,7 @@ class ObjectDetector(Node):
         #print('time: "%5f"' , time_end-time_sta)
 
         if success == False:
-            self.state = State.ERROR
+            print("system didn't detect object in right pic")
             return 
 
         imgBox = dst_img_R[self.rect[0][1]: self.rect[1][1], self.rect[0][0]: self.rect[1][0]]
@@ -173,7 +131,8 @@ class ObjectDetector(Node):
 
         #左カメラの撮影をcamera_serverに依頼
         img_L = self.loadimg_L()
-        blob = cv.dnn.blobFromImage(img_L, 1/255.0, (416, 416), swapRB=True, crop=False)
+        dst_img_L = cv.undistort(img_L, mtx, dist, None, newcameramtx)
+        blob = cv.dnn.blobFromImage(dst_img_L, 1/255.0, (416, 416), swapRB=True, crop=False)
         self.net.setInput(blob)
 
         ln = self.net.getLayerNames()
@@ -182,12 +141,12 @@ class ObjectDetector(Node):
         outputs = self.net.forward(ln)
         outputs = np.vstack(outputs)  
 
-        dst_img_L = cv.undistort(img_L, mtx, dist, None, newcameramtx)
+
         cv.imwrite('/home/enpit/Pictures/dst_img_L.jpg', dst_img_L)
         success, hsv_L = self.post_process(dst_img_L, outputs, 0.5, self.object_name)
 
         if success == False:
-            self.state = State.ERROR
+            print("system didn't detect object in left pic")
             return
 
         
@@ -199,37 +158,32 @@ class ObjectDetector(Node):
         print("pt_R:", pt_R, ", pt_L:", pt_L)
 
         print(diff_R, diff_L)
+        '''
         diff = diff_R - diff_L
         if(diff<0):
             pt_L -= diff/2
         else:
             pt_R -= diff/2
+        '''
 
-        print("h_R",hsv_R[0], "h_L", hsv_L[0], int((hsv_R[0]+hsv_L[0])/2) )
-
-        #self.request_carry.hsv = [int((hsv_R[i]+hsv_L[i])/2) for i in range(len(hsv_R))]
-        self.request_carry.hsv[0] = (hsv_R[0]+hsv_L[0])/2
-        self.request_carry.hsv[1] = (hsv_R[1]+hsv_L[1])/2
-        self.request_carry.hsv[2] = (hsv_R[2]+hsv_L[2])/2
         D = pt_L - pt_R
-        f = Z*D/T
+        #f = Z*D/T
         z = F*T/D
 
-        zx = math.sqrt(z*z-camera_height*camera_height)
+        #zx = math.sqrt(z*z-camera_height*camera_height)
 
-        self.request_carry.pos = calc_direction(pt_R, zx)
+        #request_carry.pos = calc_direction(pt_R, zx)
 
-        print("X:", self.request_carry.pos[0], ", Y:", self.request_carry.pos[1])
+        #print("X:", request_carry.pos[0], ", Y:", request_carry.pos[1])
 
         #if pt_R > 500:
         #    z += 100
         
-        print('F: ', f)
+        #print('F: ', f)
         print('Z: ', z)
 
         #response.res = 'detection success'
 
-        self.state = State.SEND
 
         return 
         
@@ -327,17 +281,6 @@ class ObjectDetector(Node):
                 #print(self.classes[classIDs[i]])
         return success, hsv
 
-    def send_carryrequest(self):
-
-        future = self.cli_carry.call_async(self.request_carry)
-        rclpy.spin_until_future_complete(self, future)
-
-        response = future.result()
-
-        #img_R = cv.imread("/home/enpit/pic/room_R.jpg")
-        self.state = State.WAIT
-        
-        return 
 
 
 def main(args=None):
@@ -345,28 +288,9 @@ def main(args=None):
 
     objectdetector = ObjectDetector()
         
-    while rclpy.ok(): 
-        #検知依頼待機状態
-        if objectdetector.state == State.WAIT:
-            rclpy.spin_once(objectdetector)
+    objectdetector.object_name = input("Name:")
 
-        #探し物検知状態
-        elif objectdetector.state == State.DETECT:
-            objectdetector.calc_position()
-
-        #運搬依頼送信状態
-        elif objectdetector.state == State.SEND:
-            print('state : SEND')
-            objectdetector.send_carryrequest()   
-
-        #エラー送信状態
-        elif objectdetector.state == State.ERROR:
-            objectdetector.msg.data = 11
-            objectdetector.publish_result() 
-            objectdetector.state = State.WAIT
-
-        time.sleep(0.1)
-
+    objectdetector.calc_position()
 
     rclpy.shutdown()
 
