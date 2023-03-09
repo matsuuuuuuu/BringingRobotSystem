@@ -13,11 +13,11 @@ from my_interfaces.srv import Frame, Detect, Carry
 import rclpy
 from rclpy.node import Node
 
-T = 7
-F = 504
-z = 0
+T = 7   #2つのカメラのレンズ間距離
+F = 450 #焦点距離
 Z = 225.7 #物体-カメラ間の距離
 
+#カメラキャリブレーションに必要な情報
 fx = 709.11284991
 fy = 704.88920349
 cx = 335.27842056
@@ -33,11 +33,12 @@ k3 = -2.37697268
 
 dist = np.array([[k1, k2, p1, p2, k3]])
 
-#地面からカメラまでの距離[cm]
-camera_height = 74.7
+
+#地面からカメラまでの高さ[cm]
+camera_height = 73.7
 
 #map上の右カメラの座標(カメラの置き場所によって変更) [x,y]
-camera_pos = [0.0, 1.0]
+camera_pos = [-0.2, 1.2]
 
 class Direction(IntEnum):
     FLONT = auto()
@@ -47,9 +48,11 @@ class Direction(IntEnum):
 
 nav_camera = Direction.FLONT
 
+#カメラのピクセル数
 Width_ = 640
 Height_ = 480 
 
+#色を抽出する範囲（値を大きくするほど範囲は狭くなる）
 cut = 2.5
 
 class State(IntEnum):
@@ -59,6 +62,7 @@ class State(IntEnum):
     SEND = auto()
     ERROR = auto()
 
+#カメラの置き場所に応じて物体の位置を算出する
 def calc_direction(pt_R, z):
     x = (2*z*pt_R-Width_*z)/(2*F*100) - camera_pos[0]
     y = z/100 - camera_pos[1]
@@ -90,8 +94,6 @@ class ObjectDetector(Node):
         while not self.cli_carry.wait_for_service(timeout_sec=1.0):
             self.get_logger().info('carry service not available, waiting again...')
         self.request_carry = Carry.Request()
-        #self.request_carry.pos = [[0.0] * 2 ]
-        #self.request_carry.hsv = [[0.0] * 3 ]
 
         self.cli_frame = self.create_client(Frame, 'camera')
         while not self.cli_frame.wait_for_service(timeout_sec=1.0):
@@ -99,8 +101,6 @@ class ObjectDetector(Node):
         self.request_frame = Frame.Request()
         self.bridge = CvBridge()
 
-        #timer_period = 0.5  # seconds
-        #self.timer = self.create_timer(timer_period, self.print_state)
 
         # Load names of classes and get random colors
         self.classes = open('/home/enpit/yolo/darknet/cfg/color_ball.names').read().strip().split('\n')
@@ -123,7 +123,7 @@ class ObjectDetector(Node):
 
     #探し物名入力システムから探し物名と届け先の座標を受信する
     def recieve_name_callback(self, request, response):
-        if(self.state = State.WAIT):
+        if(self.state == State.WAIT):
             response.res = True
         else:
             response.res = False
@@ -143,80 +143,73 @@ class ObjectDetector(Node):
         #右カメラの撮影をcamera_serverに依頼
         img_R = self.loadimg_R()
 
-        blob = cv.dnn.blobFromImage(img_R, 1/255.0, (416, 416), swapRB=True, crop=False)
-        self.net.setInput(blob)
-
-        # determine the output layer
-        ln = self.net.getLayerNames()
-        ln = [ln[i - 1] for i in self.net.getUnconnectedOutLayers()] 
-
-        outputs = self.net.forward(ln)
-        outputs = np.vstack(outputs)   
-
+        #撮影した写真に対して歪み補正を行う
         dst_img_R = cv.undistort(img_R, mtx, dist, None, newcameramtx)
-        cv.imwrite('/home/enpit/Pictures/dst_img_R.jpg', dst_img_R)
 
         #time_sta = time.time() #timer start
 
-        #物体の検出、色の抽出
+        #撮影した写真から物体の検出
+        blob = cv.dnn.blobFromImage(dst_img_R, 1/255.0, (416, 416), swapRB=True, crop=False)
+        self.net.setInput(blob)
+        ln = self.net.getLayerNames()
+        ln = [ln[i - 1] for i in self.net.getUnconnectedOutLayers()] 
+        outputs = self.net.forward(ln)
+        outputs = np.vstack(outputs)   
+
+        #検出された物体名の中から入力された探し物名と一致する物を見つけ出す
+        #色の抽出
         success, hsv_R = self.post_process(dst_img_R, outputs, 0.5, self.object_name)
+
         #time_end = time.time() # timer stop
         #print('time: "%5f"' , time_end-time_sta)
 
+        #一致する物体がなかった場合
         if success == False:
             self.state = State.ERROR
             return 
 
         imgBox = dst_img_R[self.rect[0][1]: self.rect[1][1], self.rect[0][0]: self.rect[1][0]]
         pt_R = (self.rect[0][0]+self.rect[1][0])/2
-        diff_R = self.rect[1][0] - self.rect[0][0]
 
         #左カメラの撮影をcamera_serverに依頼
         img_L = self.loadimg_L()
-        blob = cv.dnn.blobFromImage(img_L, 1/255.0, (416, 416), swapRB=True, crop=False)
-        self.net.setInput(blob)
 
+        #撮影した写真に対して歪み補正を行う
+        dst_img_L = cv.undistort(img_L, mtx, dist, None, newcameramtx)
+
+        #撮影した写真から物体の検出
+        blob = cv.dnn.blobFromImage(dst_img_L, 1/255.0, (416, 416), swapRB=True, crop=False)
+        self.net.setInput(blob)
         ln = self.net.getLayerNames()
         ln = [ln[i - 1] for i in self.net.getUnconnectedOutLayers()]
-
         outputs = self.net.forward(ln)
         outputs = np.vstack(outputs)  
 
-        dst_img_L = cv.undistort(img_L, mtx, dist, None, newcameramtx)
-        cv.imwrite('/home/enpit/Pictures/dst_img_L.jpg', dst_img_L)
+        #検出された物体名の中から入力された探し物名と一致する物を見つけ出す
+        #色の抽出
         success, hsv_L = self.post_process(dst_img_L, outputs, 0.5, self.object_name)
+        pt_L = (self.rect[0][0]+self.rect[1][0])/2
 
+        #一致する物体がなかった場合
         if success == False:
             self.state = State.ERROR
             return
 
         
         imgBox = dst_img_L[self.rect[0][1]: self.rect[1][1], self.rect[0][0]: self.rect[1][0]]
-        pt_L = (self.rect[0][0]+self.rect[1][0])/2
-        diff_L = self.rect[1][0] - self.rect[0][0]
 
-        print("diff_R:", diff_R, ", diff_L", diff_L)
-        print("pt_R:", pt_R, ", pt_L:", pt_L)
+        #抽出した色を"/carry"のメッセージ用にまとめる
+        self.request_carry.hsv[0] = hsv_L[0]
+        self.request_carry.hsv[1] = hsv_L[1]
+        self.request_carry.hsv[2] = hsv_L[2]
 
-        print(diff_R, diff_L)
-        diff = diff_R - diff_L
-        if(diff<0):
-            pt_L -= diff/2
-        else:
-            pt_R -= diff/2
-
-        print("h_R",hsv_R[0], "h_L", hsv_L[0], int((hsv_R[0]+hsv_L[0])/2) )
-
-        #self.request_carry.hsv = [int((hsv_R[i]+hsv_L[i])/2) for i in range(len(hsv_R))]
-        self.request_carry.hsv[0] = (hsv_R[0]+hsv_L[0])/2
-        self.request_carry.hsv[1] = (hsv_R[1]+hsv_L[1])/2
-        self.request_carry.hsv[2] = (hsv_R[2]+hsv_L[2])/2
+        #探し物の距離を推定する
         D = pt_L - pt_R
         f = Z*D/T
         z = F*T/D
-
         zx = math.sqrt(z*z-camera_height*camera_height)
 
+        #探し物の位置を推定する
         self.request_carry.pos = calc_direction(pt_R, zx)
 
         print("X:", self.request_carry.pos[0], ", Y:", self.request_carry.pos[1])
@@ -224,8 +217,8 @@ class ObjectDetector(Node):
         #if pt_R > 500:
         #    z += 100
         
-        print('F: ', f)
-        print('Z: ', z)
+        #print('F: ', f)
+        #print('Z: ', z)
 
         #response.res = 'detection success'
 
@@ -233,11 +226,12 @@ class ObjectDetector(Node):
 
         return 
         
-    #Right camera image load
+    #右カメラの撮影依頼を行うメソッド
     def loadimg_R(self):
 
         self.request_frame.device = 'Right'
 
+        #"/camera"サービスに部屋写真撮影依頼を行う
         future = self.cli_frame.call_async(self.request_frame)
         rclpy.spin_until_future_complete(self, future)
 
@@ -252,11 +246,12 @@ class ObjectDetector(Node):
         
         return img_R
 
-    #Left camera image load
+    #左カメラの撮影依頼を行うメソッド
     def loadimg_L(self):
         
         self.request_frame.device = 'Left'
     
+        #"/camera"サービスに部屋写真撮影依頼を行う
         future = self.cli_frame.call_async(self.request_frame)
         rclpy.spin_until_future_complete(self, future)
 
@@ -268,9 +263,14 @@ class ObjectDetector(Node):
 
         return img_L
     
+    #検出された物体の中に入力された探し物名と一致するものが存在するか調べるメソッド
     def post_process(self, img, outputs, conf, name):
+
+        #検出された物体の画像上の位置を表す四角
         boxes = []
+        #物体の確信度（%）
         confidences = []
+        #検出さらた物体のラベル名
         classIDs = []
 
         hsv = [0*3]
@@ -278,6 +278,7 @@ class ObjectDetector(Node):
 
         H, W = img.shape[:2]
 
+        #検出された物体の情報をそれぞれの配列に代入する
         for output in outputs:
             scores = output[5:]
             classID = np.argmax(scores)
@@ -294,6 +295,7 @@ class ObjectDetector(Node):
 
         if len(indices) > 0:
             for i in indices.flatten():
+                #検出された物体名と入力の探し物名が一致した場合
                 if self.classes[classIDs[i]] == name:
 
                     print('success')
@@ -319,6 +321,9 @@ class ObjectDetector(Node):
                     hsv.insert(0,int(imgBoxHsv.T[0].flatten().mean()))
                     hsv.insert(1,int(imgBoxHsv.T[1].flatten().mean()))
                     hsv.insert(2,int(imgBoxHsv.T[2].flatten().mean()))
+
+                    if hsv[0]>180:
+                        hsv[0] = hsv[0]-180
 
                     print('H:',hsv[0], ', S:', hsv[1], ', V:', hsv[2])
                     success = True
